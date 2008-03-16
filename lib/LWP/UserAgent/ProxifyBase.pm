@@ -3,7 +3,7 @@ package LWP::UserAgent::ProxifyBase;
 use warnings;
 use strict;
 
-our $VERSION = '0.001';
+our $VERSION = '0.002';
 
 use Carp;
 use Devel::TakeHashArgs;
@@ -96,6 +96,7 @@ sub proxify_load {
     $self->proxify_debug(   $args{debug  } );
     $self->proxify_working_list( [] );
     $self->proxify_bad_list( [] );
+    $self->proxify_real_bad_list( [] );
 
     return $self->proxify_list( \@proxies );
 }
@@ -123,13 +124,10 @@ sub _proxify_try_request {
             # a lot of proxies seem to be run by this company and it will
             # give us a 200 but display their page with timeout
             # all we need to do is redo the request
-            if ( $response->content =~ /codeen.cs.princeton.edu">CoDeeN/ ) {
-                $tries--;
+            if ( $response->content =~ /\Qcodeen.cs.princeton.edu">CoDeeN/ ) {
                 redo TRY_REQ;
             }
-            elsif ( $response->content
-                =~ m|<title>ESPOCH Acceso denegado</title>|
-            ) {
+            elsif ( not $self->_proxify_check_success($response->content) ) {
                 push @{ $self->proxify_real_bad_list }, $current_proxy;
             }
 
@@ -138,6 +136,8 @@ sub _proxify_try_request {
 
             redo TRY_REQ
                 unless $tries > $max_tries;
+
+            return $response;
         }
         else {
             $self->proxify_debug
@@ -175,7 +175,7 @@ sub _proxify_set_proxy {
     my $proxy = $self->proxify_current( shift @{ $self->proxify_list } );
 
     unless ( defined $proxy ) {
-        $self->debug
+        $self->proxify_debug
             and carp 'proxify_list() is exhausted, trying "working" list';
     
         $self->proxify_list = $self->proxify_working_list;
@@ -184,7 +184,7 @@ sub _proxify_set_proxy {
     }
 
     unless ( defined $proxy ) {
-        $self->debug
+        $self->proxify_debug
            and carp 'proxify_working_list() is exhausted, trying "bad" list';
 
         $self->proxify_list = $self->proxify_bad_list;
@@ -193,7 +193,7 @@ sub _proxify_set_proxy {
     }
 
     unless ( defined $proxy ) {
-        $self->debug
+        $self->proxify_debug
            and carp 'lists are exhausted, trying to proxify_load now';
 
         $self->proxify_load( %{ $self->_proxify_last_load_args || {} });
@@ -212,6 +212,33 @@ sub _proxify_set_proxy {
     return $proxy;
 }
 
+sub _proxify_check_success {
+    my ( $self, $content ) = @_;
+    return 1 if length $content > 4000;
+    if ( $content =~ m|\s*
+\Qhttp/1.1 401 Unauthorized\E\s*
+\QServer:\E\s*
+.+?
+\QWWW-Authenticate: Basic realm="ADSL Router \(ANNEX A\)"\E\s*
+\QContent-Type: text/html\E\s*
+\QConnection: close\E\s*
+\s*
+\Q<html>\E\s*
+\Q<head>\E\s*
+\Q<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-9">\E\s*
+\Q<META http-equiv="Pragma" CONTENT="no-cache">\E\s*
+\Q<META HTTP-EQUIV="Cache-Control" CONTENT="no-cache">\E\s*
+\Q<meta HTTP-EQUIV="Expires" CONTENT="Mon, 06 Jan 1990 00:00:01 GMT">\E\s*
+|xsm
+    ) {
+        return 0; # failed 
+    }
+
+    if ( $content =~ m|<title>ESPOCH Acceso denegado</title>| ) {
+        return 0; # failed
+    }
+    return 1; # success
+}
 
 1;
 __END__
